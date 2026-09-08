@@ -31,6 +31,8 @@
 #import <YouTubeHeader/YTRollingNumberNode.h>
 #import <YouTubeHeader/YTRollingNumberView.h>
 #import <YouTubeHeader/YTShortsPlayerViewController.h>
+#import <YouTubeHeader/YTSlimVideoDetailsActionView.h>
+#import <YouTubeHeader/YTSlimVideoScrollableDetailsActionsView.h>
 #import <YouTubeHeader/YTWatchController.h>
 
 @interface YTRollingNumberNode (RYD)

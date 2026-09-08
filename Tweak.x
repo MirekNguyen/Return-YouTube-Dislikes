@@ -651,6 +651,121 @@ static void layoutActionBar(YTReelWatchPlaybackOverlayView *self) {
 
 %end
 
+// ---------------------------------------------------------------------------
+// Native action bar (YouTube 21.x "details actions" design)
+// ---------------------------------------------------------------------------
+//
+// Everything above this point assumes the like/dislike row is rendered by
+// Elements, and reaches it through ASCollectionView -nodeForItemAtIndexPath:.
+// On the current watch page that is no longer true. The row under the video is
+// YTSlimVideoScrollableDetailsActionsView -- a plain UIView that builds native
+// YTSlimVideoDetailsActionView children in -createActionViewsFromSupportedRenderers:
+// and keeps the two we care about in the _likeActionView / _dislikeActionView
+// ivars. No ELMCellNode is ever created for it, so the Elements hook simply
+// never fires and the row renders with no counts at all.
+//
+// Each action view owns a YTFormattedStringLabel (_label) beside its button.
+// YouTube leaves it empty in this design -- it moved the like count up into the
+// metadata line -- so writing the dislike count into the dislike view's label
+// is enough, and it lands exactly where the count used to be.
+
+// Both classes are already declared in YouTubeHeader (imported via Tweak.h), so
+// this is a category for the %new/%property additions rather than a redeclaration.
+@interface YTSlimVideoScrollableDetailsActionsView (RYD)
+@property (nonatomic, strong) NSString *rydVideoId;
+@property (nonatomic, strong) NSString *rydDislikeText;
+- (void)ryd_applyDislikeText;
+- (void)ryd_fetchDislikes;
+@end
+
+// The Elements path gets its video ID from the node's closest view controller.
+// A native view has no node, so walk the responder chain instead -- same
+// destination (YTWatchViewController's _videoID), different route in.
+static NSString *videoIdFromResponderChain(UIView *view) {
+    UIResponder *responder = view;
+    while ((responder = responder.nextResponder)) {
+        if ([responder isKindOfClass:%c(YTWatchViewController)]) {
+            @try {
+                return [responder valueForKey:@"_videoID"];
+            } @catch (__unused id ex) {
+                return nil;
+            }
+        }
+    }
+    return nil;
+}
+
+%hook YTSlimVideoScrollableDetailsActionsView
+
+%property (nonatomic, strong) NSString *rydVideoId;
+%property (nonatomic, strong) NSString *rydDislikeText;
+
+%new
+- (void)ryd_applyDislikeText {
+    if (self.rydDislikeText.length == 0) return;
+
+    YTSlimVideoDetailsActionView *dislikeView = nil;
+    @try {
+        dislikeView = [self valueForKey:@"_dislikeActionView"];
+    } @catch (__unused id ex) {
+        return;
+    }
+
+    YTIFormattedStringLabel *label = dislikeView.label;
+    if (!label || [label.text isEqualToString:self.rydDislikeText]) return;
+
+    label.text = self.rydDislikeText;
+    label.hidden = NO;
+    // The action view sizes itself from the label, and the scroll view sizes
+    // itself from the action views, so both need re-measuring.
+    [dislikeView setNeedsLayout];
+    [self setNeedsLayout];
+}
+
+%new
+- (void)ryd_fetchDislikes {
+    NSString *videoId = videoIdFromResponderChain(self);
+    if (videoId.length == 0) return;
+    // -createActionViewsFromSupportedRenderers: fires on every relayout of the
+    // row, not just on a new video, so bail unless the video actually changed.
+    if ([self.rydVideoId isEqualToString:videoId]) return;
+
+    self.rydVideoId = videoId;
+    self.rydDislikeText = FETCHING;
+    [self ryd_applyDislikeText];
+
+    __weak typeof(self) weakSelf = self;
+    getVoteAndModifyButtons(videoId, -1, nil, ^(NSString *dislikeCount, __unused NSNumber *dislikeNumber) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        // The row is recycled between videos, so a slow response for the
+        // previous one must not overwrite the current one's count.
+        if (!strongSelf || ![strongSelf.rydVideoId isEqualToString:videoId]) return;
+        strongSelf.rydDislikeText = dislikeCount;
+        [strongSelf ryd_applyDislikeText];
+    });
+}
+
+- (void)createActionViewsFromSupportedRenderers:(id)renderers {
+    %orig;
+    if (!TweakEnabled()) return;
+    // The responder chain is not connected yet during construction, so the
+    // video ID lookup has to wait for the view to be in a window.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self ryd_fetchDislikes];
+    });
+}
+
+// YouTube rewrites the labels when the like state changes or the row
+// collapses/expands, which would wipe the count back out.
+- (void)layoutSubviews {
+    %orig;
+    if (!TweakEnabled()) return;
+    if (self.rydVideoId == nil) [self ryd_fetchDislikes];
+    [self ryd_applyDislikeText];
+}
+
+%end
+
 %ctor {
     cache = [NSCache new];
     NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
