@@ -737,7 +737,9 @@ static NSString *videoIdFromResponderChain(UIView *view) {
         [dislikeView addSubview:label];
     }
 
-    label.textColor = [currentColorPalette() textPrimary] ?: [UIColor labelColor];
+    // Not +labelColor: this tweak deploys to iOS 11 and that is 13+. The
+    // palette is YouTube's own text colour and already follows the theme.
+    label.textColor = [currentColorPalette() textPrimary] ?: [UIColor whiteColor];
     if (![label.text isEqualToString:self.rydDislikeText])
         label.text = self.rydDislikeText;
 
