@@ -671,6 +671,9 @@ static void layoutActionBar(YTReelWatchPlaybackOverlayView *self) {
 
 // Both classes are already declared in YouTubeHeader (imported via Tweak.h), so
 // this is a category for the %new/%property additions rather than a redeclaration.
+// Arbitrary, just needs to not collide with YouTube's own view tags.
+static const NSInteger RYDDislikeLabelTag = 0x52594444;
+
 @interface YTSlimVideoScrollableDetailsActionsView (RYD)
 @property (nonatomic, strong) NSString *rydVideoId;
 @property (nonatomic, strong) NSString *rydDislikeText;
@@ -710,16 +713,40 @@ static NSString *videoIdFromResponderChain(UIView *view) {
     } @catch (__unused id ex) {
         return;
     }
+    if (!dislikeView) return;
 
-    YTIFormattedStringLabel *label = dislikeView.label;
-    if (!label || [label.text isEqualToString:self.rydDislikeText]) return;
+    // Do not reuse the view's own _label.
+    //
+    // In this design YouTube ships the action bar with no counts at all -- the
+    // like count moved up to the metadata line -- so that label is empty, and
+    // an empty label is not something -layoutSubviews is obliged to lay out or
+    // even keep in the hierarchy. Writing into it and hoping YouTube positions
+    // it is how the first attempt at this failed silently.
+    //
+    // Own the label instead: add it, size it, place it. The only thing we
+    // depend on from YouTube is the action view's bounds.
+    UILabel *label = (UILabel *)[dislikeView viewWithTag:RYDDislikeLabelTag];
+    if (!label) {
+        label = [[UILabel alloc] initWithFrame:CGRectZero];
+        label.tag = RYDDislikeLabelTag;
+        label.textAlignment = NSTextAlignmentCenter;
+        label.adjustsFontSizeToFitWidth = YES;
+        label.minimumScaleFactor = 0.7;
+        label.userInteractionEnabled = NO;
+        label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        [dislikeView addSubview:label];
+    }
 
-    label.text = self.rydDislikeText;
-    label.hidden = NO;
-    // The action view sizes itself from the label, and the scroll view sizes
-    // itself from the action views, so both need re-measuring.
-    [dislikeView setNeedsLayout];
-    [self setNeedsLayout];
+    label.textColor = [currentColorPalette() textPrimary] ?: [UIColor labelColor];
+    if (![label.text isEqualToString:self.rydDislikeText])
+        label.text = self.rydDislikeText;
+
+    // Sit in the bottom strip of the action view, under the icon.
+    CGRect bounds = dislikeView.bounds;
+    if (bounds.size.height <= 0 || bounds.size.width <= 0) return;
+    CGFloat height = MIN(14.0, bounds.size.height / 3.0);
+    label.frame = CGRectMake(0, bounds.size.height - height, bounds.size.width, height);
+    [dislikeView bringSubviewToFront:label];
 }
 
 %new
