@@ -671,15 +671,15 @@ static void layoutActionBar(YTReelWatchPlaybackOverlayView *self) {
 
 // Both classes are already declared in YouTubeHeader (imported via Tweak.h), so
 // this is a category for the %new/%property additions rather than a redeclaration.
-// Arbitrary, just needs to not collide with YouTube's own view tags.
-static const NSInteger RYDDislikeLabelTag = 0x52594444;
-
-@interface YTSlimVideoScrollableDetailsActionsView (RYD)
+@interface YTSlimVideoDetailsActionView (RYD)
 @property (nonatomic, strong) NSString *rydVideoId;
 @property (nonatomic, strong) NSString *rydDislikeText;
 - (void)ryd_applyDislikeText;
 - (void)ryd_fetchDislikes;
 @end
+
+// Arbitrary, just needs to not collide with YouTube's own view tags.
+static const NSInteger RYDDislikeLabelTag = 0x52594444;
 
 // The Elements path gets its video ID from the node's closest view controller.
 // A native view has no node, so walk the responder chain instead -- same
@@ -698,7 +698,21 @@ static NSString *videoIdFromResponderChain(UIView *view) {
     return nil;
 }
 
-%hook YTSlimVideoScrollableDetailsActionsView
+// Hook the button, not the bar.
+//
+// Two earlier attempts went through the container
+// (YTSlimVideoScrollableDetailsActionsView, reached via its
+// id.video.detailsactions.view identifier) and neither rendered anything. The
+// container is the wrong thing to depend on: YouTube ships more than one action
+// bar implementation -- an Elements-rendered one and a native one, seemingly
+// A/B tested -- so whichever container is hooked, it may simply not be the one
+// in use, and the hook never fires.
+//
+// The individual button is the stable part. YTSlimVideoDetailsActionView tags
+// itself id.video.dislike.button in -updateAccessibilityIdentifier, which is
+// set by the time it lays out, so matching on that finds the dislike button
+// wherever it is hosted and regardless of what built it.
+%hook YTSlimVideoDetailsActionView
 
 %property (nonatomic, strong) NSString *rydVideoId;
 %property (nonatomic, strong) NSString *rydDislikeText;
@@ -707,25 +721,16 @@ static NSString *videoIdFromResponderChain(UIView *view) {
 - (void)ryd_applyDislikeText {
     if (self.rydDislikeText.length == 0) return;
 
-    YTSlimVideoDetailsActionView *dislikeView = nil;
-    @try {
-        dislikeView = [self valueForKey:@"_dislikeActionView"];
-    } @catch (__unused id ex) {
-        return;
-    }
-    if (!dislikeView) return;
+    CGRect bounds = self.bounds;
+    if (bounds.size.height <= 0 || bounds.size.width <= 0) return;
 
-    // Do not reuse the view's own _label.
-    //
-    // In this design YouTube ships the action bar with no counts at all -- the
-    // like count moved up to the metadata line -- so that label is empty, and
-    // an empty label is not something -layoutSubviews is obliged to lay out or
-    // even keep in the hierarchy. Writing into it and hoping YouTube positions
-    // it is how the first attempt at this failed silently.
-    //
-    // Own the label instead: add it, size it, place it. The only thing we
-    // depend on from YouTube is the action view's bounds.
-    UILabel *label = (UILabel *)[dislikeView viewWithTag:RYDDislikeLabelTag];
+    // Do not reuse the view's own _label. In this design YouTube ships the
+    // action bar with no counts at all -- the like count moved up to the
+    // metadata line -- so that label is empty, and an empty label is not
+    // something -layoutSubviews is obliged to position or even keep in the
+    // hierarchy. Writing into it and hoping YouTube lays it out is how the
+    // previous attempt failed silently. Own the label instead.
+    UILabel *label = (UILabel *)[self viewWithTag:RYDDislikeLabelTag];
     if (!label) {
         label = [[UILabel alloc] initWithFrame:CGRectZero];
         label.tag = RYDDislikeLabelTag;
@@ -734,7 +739,7 @@ static NSString *videoIdFromResponderChain(UIView *view) {
         label.minimumScaleFactor = 0.7;
         label.userInteractionEnabled = NO;
         label.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
-        [dislikeView addSubview:label];
+        [self addSubview:label];
     }
 
     // Not +labelColor: this tweak deploys to iOS 11 and that is 13+. The
@@ -743,20 +748,21 @@ static NSString *videoIdFromResponderChain(UIView *view) {
     if (![label.text isEqualToString:self.rydDislikeText])
         label.text = self.rydDislikeText;
 
-    // Sit in the bottom strip of the action view, under the icon.
-    CGRect bounds = dislikeView.bounds;
-    if (bounds.size.height <= 0 || bounds.size.width <= 0) return;
-    CGFloat height = MIN(14.0, bounds.size.height / 3.0);
-    label.frame = CGRectMake(0, bounds.size.height - height, bounds.size.width, height);
-    [dislikeView bringSubviewToFront:label];
+    // These buttons are icon-sized and centred, so the count goes just below
+    // the glyph. clipsToBounds is cleared because the label may need the last
+    // couple of points below the view to stay legible.
+    self.clipsToBounds = NO;
+    CGFloat height = 13.0;
+    label.frame = CGRectMake(-4.0, bounds.size.height - height, bounds.size.width + 8.0, height);
+    [self bringSubviewToFront:label];
 }
 
 %new
 - (void)ryd_fetchDislikes {
     NSString *videoId = videoIdFromResponderChain(self);
     if (videoId.length == 0) return;
-    // -createActionViewsFromSupportedRenderers: fires on every relayout of the
-    // row, not just on a new video, so bail unless the video actually changed.
+    // Action views are reused as the watch page moves between videos, so only
+    // refetch when the video actually changed.
     if ([self.rydVideoId isEqualToString:videoId]) return;
 
     self.rydVideoId = videoId;
@@ -766,30 +772,20 @@ static NSString *videoIdFromResponderChain(UIView *view) {
     __weak typeof(self) weakSelf = self;
     getVoteAndModifyButtons(videoId, -1, nil, ^(NSString *dislikeCount, __unused NSNumber *dislikeNumber) {
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        // The row is recycled between videos, so a slow response for the
-        // previous one must not overwrite the current one's count.
+        // A slow response for the previous video must not overwrite the
+        // current one's count.
         if (!strongSelf || ![strongSelf.rydVideoId isEqualToString:videoId]) return;
         strongSelf.rydDislikeText = dislikeCount;
         [strongSelf ryd_applyDislikeText];
     });
 }
 
-- (void)createActionViewsFromSupportedRenderers:(id)renderers {
-    %orig;
-    if (!TweakEnabled()) return;
-    // The responder chain is not connected yet during construction, so the
-    // video ID lookup has to wait for the view to be in a window.
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [self ryd_fetchDislikes];
-    });
-}
-
-// YouTube rewrites the labels when the like state changes or the row
-// collapses/expands, which would wipe the count back out.
 - (void)layoutSubviews {
     %orig;
     if (!TweakEnabled()) return;
-    if (self.rydVideoId == nil) [self ryd_fetchDislikes];
+    if (![self.accessibilityIdentifier isEqualToString:@"id.video.dislike.button"]) return;
+
+    [self ryd_fetchDislikes];
     [self ryd_applyDislikeText];
 }
 
