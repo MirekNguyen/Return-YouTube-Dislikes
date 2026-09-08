@@ -115,8 +115,20 @@ static NSString *getElementDescription(ELMCellNode *node) {
     return [[controller owningComponent] description];
 }
 
+// The action bar's host collection view was renamed. "id.video.scrollable_action_bar"
+// does not exist anywhere in the YouTube 21.33.6 binary; the only remaining
+// action-bar identifier is "id.video.detailsactions.view", the collection view
+// inside YTSlimVideoScrollableDetailsActionsView. Matching only the old name is
+// why the like/dislike row renders with no counts at all on current builds.
+//
+// Both names are accepted so this keeps working on older YouTube versions. It
+// is safe to be permissive here: the caller re-validates the node tree and
+// bails unless it finds "id.video.like.button" where it expects it, so a false
+// positive costs a tree walk and nothing else.
 static BOOL isVideoScrollableActionBar(ASCollectionView *collectionView, ELMCellNode *node) {
-    return [collectionView.accessibilityIdentifier isEqualToString:@"id.video.scrollable_action_bar"];
+    NSString *identifier = collectionView.accessibilityIdentifier;
+    return [identifier isEqualToString:@"id.video.scrollable_action_bar"]
+        || [identifier isEqualToString:@"id.video.detailsactions.view"];
 }
 
 static BOOL isVideoDescriptionHeader(ASCollectionView *collectionView, ELMCellNode *node) {
